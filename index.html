@@ -3,113 +3,299 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Crie suas próprias músicas gratuitamente. 100% dos direitos autorais são seus!">
     <title>Gerador de Músicas Gratuito</title>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         body { margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
         @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-        .animate-pulse-slow { animation: pulse-slow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        .animate-pulse-slow { animation: pulse-slow 2s ease-in-out infinite; }
     </style>
 </head>
 <body>
     <div id="root"></div>
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
+
         const MusicGenerator = () => {
+            const [user, setUser] = useState(null);
+            const [showRegister, setShowRegister] = useState(false);
+            const [registerData, setRegisterData] = useState({ name: '', email: '', acceptTerms: false });
             const [currentTab, setCurrentTab] = useState('lyrics');
-            const [songData, setSongData] = useState({
-                title: '', lyrics: '', genre: 'pop', tempo: 120, key: 'C', structure: 'verse-chorus-verse-chorus'
-            });
-            const [instruments, setInstruments] = useState({
-                piano: true, synth: true, bass: true, drums: true, strings: false, guitar: false
-            });
+            const [songData, setSongData] = useState({ title: '', lyrics: '', genre: 'pop', tempo: 120, key: 'C' });
+            const [instruments, setInstruments] = useState({ piano: true, synth: true, bass: true, drums: true });
             const [generatedSong, setGeneratedSong] = useState(null);
             const [isGenerating, setIsGenerating] = useState(false);
             const [isPlaying, setIsPlaying] = useState(false);
-            const [songsGenerated, setSongsGenerated] = useState(0);
+            const [isRecording, setIsRecording] = useState(false);
+            const [recordedBlob, setRecordedBlob] = useState(null);
+            const [downloadStatus, setDownloadStatus] = useState('');
+            const [stats, setStats] = useState({ totalUsers: 0, totalSongs: 0 });
+            const [showAdmin, setShowAdmin] = useState(false);
+
             const synthsRef = useRef({});
+            const mediaRecorderRef = useRef(null);
+            const audioChunksRef = useRef([]);
 
             useEffect(() => {
+                const savedUser = localStorage.getItem('musicGenUser');
+                if (savedUser) {
+                    setUser(JSON.parse(savedUser));
+                } else {
+                    setShowRegister(true);
+                }
+
+                const users = JSON.parse(localStorage.getItem('allUsers') || '[]');
+                const songs = parseInt(localStorage.getItem('totalSongsGenerated') || '0');
+                setStats({ totalUsers: users.length, totalSongs: songs });
+
                 synthsRef.current = {
                     piano: new Tone.PolySynth(Tone.Synth).toDestination(),
                     synth: new Tone.PolySynth(Tone.Synth).toDestination(),
                     bass: new Tone.MonoSynth().toDestination(),
-                    drums: {
-                        kick: new Tone.MembraneSynth().toDestination(),
-                        snare: new Tone.NoiseSynth().toDestination(),
-                        hihat: new Tone.MetalSynth().toDestination()
-                    }
+                    drums: { kick: new Tone.MembraneSynth().toDestination(), snare: new Tone.NoiseSynth().toDestination(), hihat: new Tone.MetalSynth().toDestination() }
                 };
-                const saved = localStorage.getItem('songsGenerated');
-                if (saved) setSongsGenerated(parseInt(saved));
+                synthsRef.current.piano.volume.value = -8;
+                synthsRef.current.synth.volume.value = -12;
+                synthsRef.current.bass.volume.value = -10;
+
                 return () => Object.values(synthsRef.current).forEach(s => s.dispose && s.dispose());
             }, []);
 
-            const scales = {
-                'C': ['C','D','E','F','G','A','B'], 'D': ['D','E','F#','G','A','B','C#'],
-                'E': ['E','F#','G#','A','B','C#','D#'], 'G': ['G','A','B','C','D','E','F#']
+            const handleRegister = (e) => {
+                e.preventDefault();
+                if (!registerData.acceptTerms) { alert('Você precisa aceitar os Termos de Uso!'); return; }
+                
+                const newUser = { id: Date.now(), name: registerData.name, email: registerData.email, registeredAt: new Date().toISOString(), songsCreated: 0, acceptedTerms: true };
+                localStorage.setItem('musicGenUser', JSON.stringify(newUser));
+                const allUsers = JSON.parse(localStorage.getItem('allUsers') || '[]');
+                allUsers.push(newUser);
+                localStorage.setItem('allUsers', JSON.stringify(allUsers));
+                setUser(newUser);
+                setShowRegister(false);
+                setStats(prev => ({ ...prev, totalUsers: allUsers.length }));
             };
-            const chordProgressions = {
-                pop: [[0,5,3,4]], rock: [[0,4,5,4]], ballad: [[0,3,5,4]]
-            };
+
+            const scales = { 'C': ['C','D','E','F','G','A','B'], 'D': ['D','E','F#','G','A','B','C#'], 'E': ['E','F#','G#','A','B','C#','D#'], 'G': ['G','A','B','C','D','E','F#'] };
+            const chordProgressions = { pop: [[0,5,3,4],[0,4,5,3]], rock: [[0,4,5,4],[0,6,3,5]], ballad: [[0,3,5,4],[0,5,3,4]] };
 
             const generateSong = () => {
                 setIsGenerating(true);
                 setTimeout(() => {
                     const scale = scales[songData.key] || scales['C'];
-                    const prog = chordProgressions[songData.genre] || chordProgressions['pop'];
-                    const chords = prog[0].map(d => [scale[d%7]+'3', scale[(d+2)%7]+'3', scale[(d+4)%7]+'3']);
-                    const melody = Array(16).fill(0).map(() => scale[Math.floor(Math.random()*7)]+'4');
-                    setGeneratedSong({ chords, melody });
+                    const progs = chordProgressions[songData.genre] || chordProgressions['pop'];
+                    const sections = [];
+                    
+                    // Gerar 36 seções = ~3 minutos de música
+                    for (let s = 0; s < 36; s++) {
+                        const prog = progs[s % progs.length];
+                        const chords = prog.map(d => [scale[d%7]+'3', scale[(d+2)%7]+'3', scale[(d+4)%7]+'3']);
+                        const melody = Array(16).fill(0).map((_, i) => scale[(s+i)%7] + (s%2===0?'4':'5'));
+                        sections.push({ chords, melody });
+                    }
+
+                    setGeneratedSong(sections);
                     setIsGenerating(false);
                     setCurrentTab('preview');
-                    const n = songsGenerated + 1;
-                    setSongsGenerated(n);
-                    localStorage.setItem('songsGenerated', n);
-                }, 1500);
+
+                    const updatedUser = { ...user, songsCreated: (user.songsCreated||0)+1 };
+                    setUser(updatedUser);
+                    localStorage.setItem('musicGenUser', JSON.stringify(updatedUser));
+                    const totalSongs = parseInt(localStorage.getItem('totalSongsGenerated')||'0')+1;
+                    localStorage.setItem('totalSongsGenerated', totalSongs);
+                    setStats(prev => ({ ...prev, totalSongs }));
+                }, 2000);
             };
 
-            const playSong = async () => {
+            const startRecording = () => {
+                try {
+                    const dest = Tone.getDestination();
+                    const streamDest = dest.context.rawContext.createMediaStreamDestination();
+                    dest.connect(streamDest);
+                    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+                    mediaRecorderRef.current = new MediaRecorder(streamDest.stream, { mimeType });
+                    audioChunksRef.current = [];
+                    mediaRecorderRef.current.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+                    mediaRecorderRef.current.onstop = () => {
+                        const blob = new Blob(audioChunksRef.current, { type: mimeType });
+                        setRecordedBlob(blob);
+                        setDownloadStatus('✅ Pronto para baixar!');
+                    };
+                    mediaRecorderRef.current.start(100);
+                    setIsRecording(true);
+                    setDownloadStatus('🎙️ Gravando 3 minutos...');
+                } catch (err) { setDownloadStatus('❌ Erro. Use Chrome/Edge.'); }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+                    mediaRecorderRef.current.stop();
+                    setIsRecording(false);
+                }
+            };
+
+            const playSong = async (record = false) => {
                 await Tone.start();
                 setIsPlaying(true);
+                if (record) startRecording();
+
                 const now = Tone.now();
-                const bd = 60/songData.tempo;
-                generatedSong.chords.forEach((c,i) => {
-                    if(instruments.piano) synthsRef.current.piano.triggerAttackRelease(c, '2n', now+i*bd*4);
-                });
-                generatedSong.melody.forEach((n,i) => {
-                    if(instruments.piano) synthsRef.current.piano.triggerAttackRelease(n, '8n', now+i*bd);
-                });
-                if(instruments.drums) {
-                    for(let i=0; i<16; i++) {
-                        const t = now+i*bd;
-                        if(i%4===0) synthsRef.current.drums.kick.triggerAttackRelease('C1','8n',t);
-                        if(i%4===1||i%4===3) synthsRef.current.drums.snare.triggerAttackRelease('8n',t);
+                const bd = 60 / songData.tempo;
+                let ct = now;
+
+                generatedSong.forEach((section) => {
+                    section.chords.forEach((chord, i) => {
+                        const t = ct + i * bd * 4;
+                        if (instruments.piano) synthsRef.current.piano.triggerAttackRelease(chord, '2n', t);
+                        if (instruments.synth) synthsRef.current.synth.triggerAttackRelease(chord, '1n', t);
+                    });
+                    section.melody.forEach((note, i) => {
+                        const t = ct + i * bd;
+                        if (instruments.piano) synthsRef.current.piano.triggerAttackRelease(note, '8n', t);
+                    });
+                    if (instruments.drums) {
+                        for (let i = 0; i < 16; i++) {
+                            const t = ct + i * bd;
+                            if (i%4===0||i%4===2) synthsRef.current.drums.kick.triggerAttackRelease('C1','8n',t);
+                            if (i%4===1||i%4===3) synthsRef.current.drums.snare.triggerAttackRelease('8n',t);
+                            synthsRef.current.drums.hihat.triggerAttackRelease('32n',t);
+                        }
                     }
-                }
-                setTimeout(() => setIsPlaying(false), 16*bd*1000);
+                    ct += section.chords.length * bd * 4;
+                });
+
+                const totalDur = generatedSong.reduce((a,s) => a + s.chords.length*bd*4, 0)*1000;
+                setTimeout(() => { setIsPlaying(false); if(record) stopRecording(); }, totalDur+500);
             };
+
+            const downloadAudio = () => {
+                if (!recordedBlob) return;
+                const url = URL.createObjectURL(recordedBlob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${songData.title||'minha-musica'}.webm`;
+                a.click();
+                URL.revokeObjectURL(url);
+                setDownloadStatus('✅ Download iniciado!');
+            };
+
+            const exportUsers = () => {
+                const users = JSON.parse(localStorage.getItem('allUsers')||'[]');
+                const csv = 'Nome,Email,Data,Músicas,Termos\n' + users.map(u => `${u.name},${u.email},${new Date(u.registeredAt).toLocaleDateString()},${u.songsCreated||0},${u.acceptedTerms?'Sim':'Não'}`).join('\n');
+                const blob = new Blob([csv], {type:'text/csv'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'usuarios.csv';
+                a.click();
+            };
+
+            if (showRegister) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 flex items-center justify-center p-4">
+                        <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6 md:p-8 max-w-md w-full">
+                            <h1 className="text-2xl md:text-3xl font-bold text-white mb-2 text-center">🎵 Bem-vindo!</h1>
+                            <p className="text-purple-200 text-center mb-6">Cadastre-se grátis para criar músicas de 3 minutos</p>
+                            <form onSubmit={handleRegister} className="space-y-4">
+                                <div>
+                                    <label className="block text-white font-semibold mb-2">Nome Completo *</label>
+                                    <input type="text" required value={registerData.name}
+                                        onChange={e => setRegisterData({...registerData, name: e.target.value})}
+                                        placeholder="Seu nome completo"
+                                        className="w-full p-3 rounded-lg bg-white/20 text-white placeholder-purple-300 border border-white/30 focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                                </div>
+                                <div>
+                                    <label className="block text-white font-semibold mb-2">Email *</label>
+                                    <input type="email" required value={registerData.email}
+                                        onChange={e => setRegisterData({...registerData, email: e.target.value})}
+                                        placeholder="seu@email.com"
+                                        className="w-full p-3 rounded-lg bg-white/20 text-white placeholder-purple-300 border border-white/30 focus:outline-none focus:ring-2 focus:ring-purple-400" />
+                                </div>
+                                
+                                <div className="bg-yellow-500/20 border border-yellow-500/50 rounded-lg p-4">
+                                    <p className="text-yellow-200 text-sm font-bold mb-2">⚠️ LEIA ANTES DE ACEITAR:</p>
+                                    <ul className="text-yellow-200 text-xs space-y-1 ml-4 list-disc">
+                                        <li><strong>VOCÊ é 100% responsável</strong> pelas músicas geradas</li>
+                                        <li><strong>Verifique originalidade</strong> antes de comercializar</li>
+                                        <li><strong>A plataforma NÃO se responsabiliza</strong> por violações de direitos autorais</li>
+                                        <li>Não garantimos que a música seja única</li>
+                                    </ul>
+                                </div>
+
+                                <label className="flex items-start gap-3 cursor-pointer bg-white/10 rounded-lg p-3">
+                                    <input type="checkbox" required checked={registerData.acceptTerms}
+                                        onChange={e => setRegisterData({...registerData, acceptTerms: e.target.checked})}
+                                        className="w-5 h-5 mt-1 flex-shrink-0" />
+                                    <span className="text-white text-sm">
+                                        <strong>Li e ACEITO os termos.</strong> Reconheço que sou totalmente responsável pelo uso das músicas geradas e que a plataforma não se responsabiliza por violações de direitos autorais de terceiros. *
+                                    </span>
+                                </label>
+
+                                <button type="submit" disabled={!registerData.acceptTerms}
+                                    className="w-full bg-gradient-to-r from-green-500 to-emerald-600 disabled:from-gray-500 disabled:to-gray-600 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl hover:from-green-600 hover:to-emerald-700 transition">
+                                    ✨ Começar Gratuitamente
+                                </button>
+                                <p className="text-purple-300 text-xs text-center">100% gratuito • Músicas de 3 minutos • Seus direitos autorais</p>
+                            </form>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (showAdmin) {
+                const users = JSON.parse(localStorage.getItem('allUsers')||'[]');
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 p-4">
+                        <div className="max-w-6xl mx-auto">
+                            <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-6">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h1 className="text-2xl font-bold text-white">📊 Dashboard</h1>
+                                    <button onClick={() => setShowAdmin(false)} className="text-white hover:text-purple-300">← Voltar</button>
+                                </div>
+                                <div className="grid grid-cols-2 gap-4 mb-6">
+                                    <div className="bg-white/10 rounded-lg p-4">
+                                        <p className="text-purple-300 text-sm">Usuários</p>
+                                        <p className="text-3xl font-bold text-white">{stats.totalUsers}</p>
+                                    </div>
+                                    <div className="bg-white/10 rounded-lg p-4">
+                                        <p className="text-purple-300 text-sm">Músicas</p>
+                                        <p className="text-3xl font-bold text-white">{stats.totalSongs}</p>
+                                    </div>
+                                </div>
+                                <button onClick={exportUsers} className="w-full bg-blue-500 text-white font-bold py-3 rounded-lg mb-4 hover:bg-blue-600">
+                                    📥 Exportar CSV
+                                </button>
+                                <div className="bg-white/5 rounded-lg p-4 max-h-96 overflow-y-auto">
+                                    {users.map((u,i) => (
+                                        <div key={i} className="bg-white/10 rounded-lg p-3 mb-2">
+                                            <p className="text-white font-semibold">{u.name}</p>
+                                            <p className="text-purple-300 text-sm">{u.email}</p>
+                                            <p className="text-purple-400 text-xs">Músicas: {u.songsCreated||0} • {new Date(u.registeredAt).toLocaleDateString()} • Termos: {u.acceptedTerms?'✅':'❌'}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
 
             return (
                 <div className="min-h-screen bg-gradient-to-br from-indigo-900 via-purple-900 to-pink-900 p-4 md:p-8">
                     <div className="max-w-6xl mx-auto">
                         <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl overflow-hidden mb-6">
-                            <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-6">
+                            <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-4 md:p-6">
                                 <div className="flex items-center justify-between">
                                     <div>
-                                        <h1 className="text-3xl font-bold text-white">🎵 Gerador de Músicas</h1>
-                                        <p className="text-purple-100 text-sm">100% Gratuito - Seus Direitos</p>
+                                        <h1 className="text-xl md:text-3xl font-bold text-white">🎵 Olá, {user?.name}!</h1>
+                                        <p className="text-purple-100 text-sm">Você criou {user?.songsCreated||0} músicas</p>
                                     </div>
-                                    <div className="bg-white/20 rounded-lg px-4 py-2 text-center">
-                                        <p className="text-2xl font-bold text-white">{songsGenerated}</p>
-                                        <p className="text-xs text-purple-100">Músicas</p>
-                                    </div>
+                                    <button onClick={() => setShowAdmin(!showAdmin)} className="bg-white/20 rounded-lg px-4 py-2 text-white text-sm hover:bg-white/30">
+                                        📊
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -118,7 +304,7 @@
                             <div className="flex border-b border-white/20">
                                 {['lyrics','settings','preview'].map(t => (
                                     <button key={t} onClick={() => setCurrentTab(t)}
-                                        className={`flex-1 py-4 px-6 font-semibold transition ${
+                                        className={`flex-1 py-4 px-3 md:px-6 font-semibold transition text-sm md:text-base ${
                                             currentTab===t ? 'bg-white/20 text-white border-b-2 border-white' : 'text-purple-200 hover:bg-white/10'
                                         }`}>
                                         {t==='lyrics'&&'📝 Letra'}{t==='settings'&&'⚙️ Config'}{t==='preview'&&'🎵 Preview'}
@@ -126,29 +312,29 @@
                                 ))}
                             </div>
 
-                            <div className="p-6">
+                            <div className="p-4 md:p-6">
                                 {currentTab==='lyrics' && (
-                                    <div className="space-y-6">
+                                    <div className="space-y-4">
                                         <div>
                                             <label className="block text-white font-semibold mb-2">Título</label>
-                                            <input type="text" value={songData.title} 
+                                            <input type="text" value={songData.title}
                                                 onChange={e => setSongData({...songData, title: e.target.value})}
-                                                placeholder="Nome da sua música" 
+                                                placeholder="Nome da música"
                                                 className="w-full p-3 rounded-lg bg-white/20 text-white placeholder-purple-300 border border-white/30" />
                                         </div>
                                         <div>
                                             <label className="block text-white font-semibold mb-2">Letra</label>
                                             <textarea value={songData.lyrics}
                                                 onChange={e => setSongData({...songData, lyrics: e.target.value})}
-                                                placeholder="Digite sua letra aqui..." rows={12}
+                                                placeholder="Digite sua letra..." rows={12}
                                                 className="w-full p-4 rounded-lg bg-white/20 text-white placeholder-purple-300 border border-white/30" />
                                         </div>
                                     </div>
                                 )}
 
                                 {currentTab==='settings' && (
-                                    <div className="space-y-6">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div className="space-y-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                             <div>
                                                 <label className="block text-white font-semibold mb-2">Gênero</label>
                                                 <select value={songData.genre} onChange={e => setSongData({...songData, genre: e.target.value})}
@@ -177,39 +363,72 @@
                                         </div>
                                         <div>
                                             <label className="block text-white font-semibold mb-3">Instrumentos</label>
-                                            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                            <div className="grid grid-cols-2 gap-3">
                                                 {Object.entries(instruments).map(([k,v]) => (
                                                     <label key={k} className="flex items-center gap-2 bg-white/10 rounded-lg p-3 cursor-pointer">
                                                         <input type="checkbox" checked={v} onChange={e => setInstruments({...instruments, [k]: e.target.checked})} />
-                                                        <span className="text-white capitalize">{k==='synth'?'Sintetizador':k==='drums'?'Bateria':k}</span>
+                                                        <span className="text-white capitalize text-sm">{k==='synth'?'Sintetizador':k==='drums'?'Bateria':k}</span>
                                                     </label>
                                                 ))}
                                             </div>
                                         </div>
                                         <button onClick={generateSong} disabled={isGenerating}
-                                            className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-4 rounded-xl">
-                                            {isGenerating ? '⏳ Gerando...' : '✨ Gerar Música'}
+                                            className="w-full bg-gradient-to-r from-green-500 to-emerald-600 disabled:from-gray-500 text-white font-bold py-4 rounded-xl">
+                                            {isGenerating ? '⏳ Gerando 3 minutos...' : '✨ Gerar Música (3 min)'}
                                         </button>
                                     </div>
                                 )}
 
                                 {currentTab==='preview' && (
-                                    <div className="space-y-6">
+                                    <div className="space-y-4">
                                         {!generatedSong ? (
                                             <div className="text-center py-12">
-                                                <p className="text-white text-lg">Configure e gere sua música primeiro!</p>
+                                                <p className="text-white text-lg">Gere sua música primeiro!</p>
                                             </div>
                                         ) : (
                                             <>
-                                                <div className="bg-white/10 rounded-xl p-6">
-                                                    <h3 className="text-white font-bold text-xl">{songData.title || 'Sem Título'}</h3>
+                                                <div className="bg-white/10 rounded-xl p-4">
+                                                    <h3 className="text-white font-bold text-xl">{songData.title||'Sem Título'}</h3>
+                                                    <p className="text-purple-300 text-sm">Duração: ~3 minutos completos</p>
                                                 </div>
-                                                <button onClick={isPlaying ? () => setIsPlaying(false) : playSong}
-                                                    className={`w-full font-bold py-4 rounded-xl ${isPlaying ? 'bg-red-500' : 'bg-green-500'} text-white`}>
-                                                    {isPlaying ? '⏹️ Parar' : '▶️ Tocar'}
-                                                </button>
+
+                                                <div className="flex flex-col gap-3">
+                                                    {!isPlaying ? (
+                                                        <button onClick={() => playSong(false)}
+                                                            className="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-4 rounded-xl">
+                                                            ▶️ Tocar Preview
+                                                        </button>
+                                                    ) : (
+                                                        <button onClick={() => setIsPlaying(false)}
+                                                            className="w-full bg-red-500 hover:bg-red-600 text-white font-bold py-4 rounded-xl">
+                                                            ⏹️ Parar
+                                                        </button>
+                                                    )}
+
+                                                    <button onClick={() => playSong(true)} disabled={isPlaying||isRecording}
+                                                        className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-500 text-white font-bold py-4 rounded-xl">
+                                                        {isRecording ? '🎙️ Gravando...' : '🎬 Gravar Download'}
+                                                    </button>
+
+                                                    {recordedBlob && (
+                                                        <button onClick={downloadAudio}
+                                                            className="w-full bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold py-4 rounded-xl animate-pulse-slow">
+                                                            💾 BAIXAR AGORA!
+                                                        </button>
+                                                    )}
+
+                                                    {downloadStatus && (
+                                                        <div className="bg-blue-500/20 border border-blue-500/50 rounded-lg p-3 text-center">
+                                                            <p className="text-white text-sm">{downloadStatus}</p>
+                                                        </div>
+                                                    )}
+                                                </div>
+
                                                 <div className="bg-green-500/20 border border-green-500/50 rounded-lg p-4">
-                                                    <p className="text-green-200 text-sm">✅ Esta música é 100% sua! Todos os direitos autorais pertencem a você!</p>
+                                                    <p className="text-green-200 text-sm">
+                                                        ✅ <strong>Esta música é 100% sua!</strong> Você pode registrá-la e comercializar. 
+                                                        Lembre-se: você é responsável por verificar originalidade.
+                                                    </p>
                                                 </div>
                                             </>
                                         )}
@@ -217,10 +436,18 @@
                                 )}
                             </div>
                         </div>
+
+                        <div className="mt-4 text-center">
+                            <p className="text-purple-300 text-xs">
+                                Ao usar este serviço, você aceita nossa política de responsabilidade. 
+                                Você é responsável pelas músicas geradas.
+                            </p>
+                        </div>
                     </div>
                 </div>
             );
         };
+
         ReactDOM.createRoot(document.getElementById('root')).render(<MusicGenerator />);
     </script>
 </body>
